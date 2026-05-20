@@ -301,15 +301,17 @@ h1,h2,h3,h4 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
   to   { opacity: 1; transform: none; }
 }
 
-/* ---------- aux panel ---------- */
+/* ---------- aux panel (Tasks only) ---------- */
 .aux-panel {
   background: var(--sidebar-bg);
   border-left: 1px solid var(--border);
-  display: flex; flex-direction: column;
+  display: none;
+  flex-direction: column;
   overflow: hidden;
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
 }
+#app.has-aux .aux-panel { display: flex; }
 .panel-head {
   display: flex; align-items: center; justify-content: space-between;
   padding: 14px 14px; height: 52px;
@@ -1089,9 +1091,21 @@ input.in.title:focus { box-shadow: none; }
 .mobile-only { display: none; }
 
 @media (max-width: 1024px) {
-  #app, #app.has-aux { grid-template-columns: var(--sidebar-w) 1fr 0; }
-  .aux-panel { position: fixed; top: 0; right: 0; height: calc(100vh - var(--dock-h)); width: 320px; z-index: 60; transition: transform 220ms var(--ease); border-left: 1px solid var(--border); }
-  #app:not(.aux-open) .aux-panel { transform: translateX(100%); }
+  #app, #app.has-aux {
+    grid-template-columns: var(--sidebar-w) 1fr;
+    grid-template-areas: "sidebar main" "dock dock";
+  }
+  #app.has-aux .aux-panel {
+    display: flex;
+    position: fixed;
+    top: 0; right: 0;
+    height: calc(100vh - var(--dock-h));
+    width: 320px;
+    z-index: 60;
+    transition: transform 220ms var(--ease);
+    border-left: 1px solid var(--border);
+  }
+  #app.has-aux:not(.aux-open) .aux-panel { transform: translateX(100%); }
 }
 
 @media (max-width: 720px) {
