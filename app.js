@@ -4,7 +4,7 @@
 
 // ----- Supabase config -----------------------------------------------------
 const SUPABASE_URL      = 'https://rpiljdyfvnpysfhwzcww.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_MGPWOpKX2rh_3oJfjPf3Mw_5fFpmrrr';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJwaWxqZHlmdm5weXNmaHd6Y3d3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkyMzk0NTIsImV4cCI6MjA5NDgxNTQ1Mn0.N_f_2ej_bfJJttFxfH3TmXfIYrkROkD282LldAO26U0';
 // --------------------------------------------------------------------------
 
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -26,11 +26,10 @@ const state = {
   doneFolded: {},
   focusMode: false,
 
-  // notes
-  noteFolders: [],
+  // notes — folders ARE projects, so notesProjectFilter replaces notesFolderFilter
   notes: [],
   currentNoteId: null,
-  notesFolderFilter: null,
+  notesProjectFilter: null,
   notesSearch: '',
   notesSort: 'modified',           // 'modified' | 'created' | 'alpha'
   editorFontSize: 15,
@@ -45,11 +44,17 @@ const state = {
 };
 
 const PROJECT_COLORS = ['#007AFF','#FFD60A','#30D158','#FF6B6B','#5856D6','#06b6d4','#ec4899','#84cc16'];
-const SEED_PROJECTS  = ['VendorLink','Stolen Hours (Rockea)','Marketing'];
-const SEED_FOLDERS   = [
-  { name: 'VendorLink',           color: '#007AFF', icon: '📘' },
-  { name: 'Stolen Hours/Rockea',  color: '#FF9F0A', icon: '🌙' },
-  { name: 'Ideas',                color: '#FFD60A', icon: '💡' },
+const SEED_PROJECTS  = ['VendorLink','Stolen Hours/Rockea','Marketing'];
+const LIST_ICONS = ['📋','✅','📚','💡','🎯','🌱','🌸','↗️','⭐','📝','🔥','🛒'];
+const LIST_GRADIENTS = [
+  'linear-gradient(135deg,#5856D6,#7C3AED)',
+  'linear-gradient(135deg,#007AFF,#0055d4)',
+  'linear-gradient(135deg,#30D158,#00916E)',
+  'linear-gradient(135deg,#FFD60A,#FF9F0A)',
+  'linear-gradient(135deg,#FF6B6B,#BE185D)',
+  'linear-gradient(135deg,#34D399,#10B981)',
+  'linear-gradient(135deg,#EC4899,#BE185D)',
+  'linear-gradient(135deg,#06b6d4,#0e7490)',
 ];
 const SEED_LISTS = [
   { name: 'Priorities',     icon: '🎯', color_gradient: 'linear-gradient(135deg,#007AFF,#0055d4)',  category: 'workspace' },
@@ -101,52 +106,51 @@ function isDueToday(t) { return t.due_date === todayISO() && t.status !== 'done'
 // DATA LAYER
 // =====================================================
 async function loadAll() {
-  const [
-    { data: projects, error: pe },
-    { data: tasks, error: te },
-    { data: blocks, error: be },
-    { data: wbt, error: we },
-    { data: folders, error: fe },
-    { data: notes, error: ne },
-    { data: lists, error: le },
-    { data: items, error: ie },
-  ] = await Promise.all([
+  const labels = ['projects','tasks','work_blocks','work_block_tasks','notes','lists','list_items'];
+  const results = await Promise.all([
     sb.from('projects').select('*').order('position', { ascending: true }),
     sb.from('tasks').select('*').order('created_at', { ascending: false }),
     sb.from('work_blocks').select('*').order('position', { ascending: true }),
     sb.from('work_block_tasks').select('*').order('position', { ascending: true }),
-    sb.from('note_folders').select('*').order('position', { ascending: true }),
     sb.from('notes').select('*').order('updated_at', { ascending: false }),
     sb.from('lists').select('*').order('position', { ascending: true }),
     sb.from('list_items').select('*').order('sort_order', { ascending: true }),
   ]);
-  const err = pe || te || be || we || fe || ne || le || ie;
-  if (err) {
-    toast('Failed to load — check Supabase keys / schema', 'error');
-    console.error(err);
-    return;
-  }
-  state.projects       = projects || [];
-  state.tasks          = tasks || [];
-  state.workBlocks     = blocks || [];
-  state.workBlockTasks = wbt || [];
-  state.noteFolders    = folders || [];
-  state.notes          = notes || [];
-  state.lists          = lists || [];
-  state.listItems      = items || [];
 
-  if (!state.projects.length) {
+  let anyError = false;
+  results.forEach((r, i) => {
+    if (r.error) {
+      anyError = true;
+      console.error(`[loadAll] ${labels[i]} query failed:`, r.error);
+    }
+  });
+  if (anyError) toast('Some data failed to load — see console', 'error');
+
+  // Always commit whatever succeeded — one failing query should not blank the rest.
+  state.projects       = results[0].data || [];
+  state.tasks          = results[1].data || [];
+  state.workBlocks     = results[2].data || [];
+  state.workBlockTasks = results[3].data || [];
+  state.notes          = results[4].data || [];
+  state.lists          = results[5].data || [];
+  state.listItems      = results[6].data || [];
+
+  console.log(
+    `[loadAll] projects=${state.projects.length} tasks=${state.tasks.length} ` +
+    `blocks=${state.workBlocks.length} notes=${state.notes.length} ` +
+    `lists=${state.lists.length} items=${state.listItems.length}`
+  );
+  const byStatus = state.tasks.reduce((acc, t) => { acc[t.status] = (acc[t.status] || 0) + 1; return acc; }, {});
+  console.log('[loadAll] tasks by status:', byStatus);
+
+  // Only seed when the projects/lists fetch *succeeded* and came back empty —
+  // otherwise an RLS read-block would silently spawn duplicate rows.
+  if (!results[0].error && !state.projects.length) {
     for (let i = 0; i < SEED_PROJECTS.length; i++) {
       await createProject(SEED_PROJECTS[i], PROJECT_COLORS[i % PROJECT_COLORS.length], i);
     }
   }
-  if (!state.noteFolders.length) {
-    for (let i = 0; i < SEED_FOLDERS.length; i++) {
-      const f = SEED_FOLDERS[i];
-      await createNoteFolder(f.name, f.color, f.icon, i);
-    }
-  }
-  if (!state.lists.length) {
+  if (!results[5].error && !state.lists.length) {
     for (let i = 0; i < SEED_LISTS.length; i++) {
       const L = SEED_LISTS[i];
       await createList(L, i);
@@ -156,13 +160,30 @@ async function loadAll() {
 }
 
 // ---------- projects ----------
+async function refreshProjects() {
+  const { data, error } = await sb.from('projects').select('*').order('position', { ascending: true });
+  if (error) { console.error('[refreshProjects] failed:', error); return false; }
+  state.projects = data || [];
+  return true;
+}
+
 async function createProject(name, color, position) {
   const tmp = { id: uid(), name, color, position: position ?? state.projects.length, created_at: new Date().toISOString() };
   state.projects.push(tmp);
   renderSidebar();
   const { data, error } = await sb.from('projects').insert({ name, color, position: tmp.position }).select().single();
-  if (error) { state.projects = state.projects.filter(p => p.id !== tmp.id); renderSidebar(); return; }
+  if (error) {
+    console.error('[createProject] insert failed:', error);
+    toast(`Create project failed: ${error.message || error.hint || 'unknown error'}`, 'error');
+    state.projects = state.projects.filter(p => p.id !== tmp.id);
+    await refreshProjects();
+    renderSidebar(); renderView();
+    return;
+  }
+  // Replace optimistic placeholder with the real row, then re-sync from Supabase
+  // so the sidebar always reflects what the DB actually has.
   Object.assign(tmp, data);
+  await refreshProjects();
   renderSidebar(); renderView();
 }
 async function renameProject(id, name) {
@@ -178,7 +199,10 @@ async function updateProjectColor(id, color) {
 async function deleteProject(id) {
   state.projects = state.projects.filter(p => p.id !== id);
   state.tasks = state.tasks.filter(t => t.project_id !== id);
+  state.notes.forEach(n => { if (n.project_id === id) n.project_id = null; });
+  state.lists.forEach(L => { if (L.project_id === id) L.project_id = null; });
   if (state.currentProjectId === id) { state.tasksView = 'today'; state.currentProjectId = null; }
+  if (state.notesProjectFilter === id) state.notesProjectFilter = null;
   renderSidebar(); renderView();
   await sb.from('projects').delete().eq('id', id);
 }
@@ -188,6 +212,7 @@ async function createTask(partial) {
   const tmp = {
     id: uid(),
     project_id: partial.project_id ?? state.projects[0]?.id ?? null,
+    note_id: partial.note_id || null,
     title: partial.title || 'Untitled',
     description: partial.description || '',
     due_date: partial.due_date || null,
@@ -203,7 +228,8 @@ async function createTask(partial) {
   state.tasks.unshift(tmp);
   renderView();
   const { data, error } = await sb.from('tasks').insert({
-    project_id: tmp.project_id, title: tmp.title, description: tmp.description,
+    project_id: tmp.project_id, note_id: tmp.note_id,
+    title: tmp.title, description: tmp.description,
     due_date: tmp.due_date, priority: tmp.priority, time_estimate: tmp.time_estimate,
     tags: tmp.tags, status: tmp.status, recurring: tmp.recurring,
   }).select().single();
@@ -276,30 +302,13 @@ async function removeTaskFromBlock(blockId, taskId) {
   await sb.from('work_block_tasks').delete().eq('work_block_id', blockId).eq('task_id', taskId);
 }
 
-// ---------- note folders ----------
-async function createNoteFolder(name, color, icon, position) {
-  const tmp = { id: uid(), name, color, icon, position: position ?? state.noteFolders.length, created_at: new Date().toISOString() };
-  state.noteFolders.push(tmp); renderSidebar();
-  const { data, error } = await sb.from('note_folders').insert({ name, color, icon, position: tmp.position }).select().single();
-  if (error) { state.noteFolders = state.noteFolders.filter(f => f.id !== tmp.id); renderSidebar(); return; }
-  Object.assign(tmp, data); renderSidebar(); renderView();
-}
-async function deleteNoteFolder(id) {
-  state.noteFolders = state.noteFolders.filter(f => f.id !== id);
-  state.notes.forEach(n => { if (n.folder_id === id) n.folder_id = null; });
-  if (state.notesFolderFilter === id) state.notesFolderFilter = null;
-  renderSidebar(); renderView();
-  await sb.from('note_folders').delete().eq('id', id);
-}
-
 // ---------- notes ----------
 async function createNote(partial = {}) {
   const tmp = {
     id: uid(),
     title: partial.title || 'New note',
     body: partial.body || '',
-    folder_id: partial.folder_id ?? state.notesFolderFilter ?? null,
-    project_id: partial.project_id ?? null,
+    project_id: partial.project_id ?? state.notesProjectFilter ?? null,
     word_count: 0,
     pinned: false,
     created_at: new Date().toISOString(),
@@ -309,7 +318,7 @@ async function createNote(partial = {}) {
   state.currentNoteId = tmp.id;
   renderView();
   const { data, error } = await sb.from('notes').insert({
-    title: tmp.title, body: tmp.body, folder_id: tmp.folder_id, project_id: tmp.project_id,
+    title: tmp.title, body: tmp.body, project_id: tmp.project_id,
     word_count: 0, pinned: false,
   }).select().single();
   if (error) { toast('Create note failed','error'); state.notes = state.notes.filter(n => n.id !== tmp.id); renderView(); return; }
@@ -358,6 +367,22 @@ async function renameList(id, name) {
   const L = state.lists.find(l => l.id === id); if (!L) return;
   L.name = name; renderSidebar(); renderView();
   await sb.from('lists').update({ name }).eq('id', id);
+}
+async function updateList(id, patch) {
+  const L = state.lists.find(l => l.id === id); if (!L) return;
+  Object.assign(L, patch); renderSidebar(); renderView();
+  const { error } = await sb.from('lists').update(patch).eq('id', id);
+  if (error) { toast('Save failed','error'); console.error(error); }
+}
+async function reorderListItems(listId, orderedIds) {
+  orderedIds.forEach((id, i) => {
+    const it = state.listItems.find(x => x.id === id);
+    if (it) it.sort_order = i;
+  });
+  renderView();
+  await Promise.all(orderedIds.map((id, i) =>
+    sb.from('list_items').update({ sort_order: i }).eq('id', id)
+  ));
 }
 async function deleteList(id) {
   state.lists = state.lists.filter(L => L.id !== id);
@@ -552,16 +577,35 @@ function renderTasksSidebar() {
     const total = tasksIn.length;
     const done = tasksIn.filter(t => t.status === 'done').length;
     const pct = total ? Math.round((done / total) * 100) : 0;
+    const noteCount = state.notes.filter(n => n.project_id === p.id).length;
+    const projectLists = state.lists.filter(L => L.project_id === p.id);
     const el = document.createElement('div');
     el.className = 'project-item' + (state.tasksView === 'project' && state.currentProjectId === p.id ? ' active' : '');
     el.innerHTML = `
       <span class="project-dot" style="background:${p.color}"></span>
       <span class="project-name">${escapeHtml(p.name)}</span>
+      ${noteCount ? `<span class="project-notes-badge" title="${noteCount} note${noteCount === 1 ? '' : 's'}">${ic('note', 11)}<span>${noteCount}</span></span>` : ''}
       <span class="project-progress" title="${done}/${total}"><span style="width:${pct}%"></span></span>
     `;
     el.onclick = () => openProject(p.id);
     el.oncontextmenu = (e) => { e.preventDefault(); projectContextMenu(p); };
     projSec.appendChild(el);
+
+    projectLists.forEach(L => {
+      const sub = document.createElement('div');
+      sub.className = 'project-list-item' + (state.section === 'lists' && state.currentListId === L.id ? ' active' : '');
+      sub.innerHTML = `
+        <span class="project-list-bullet" style="background:${L.color_gradient}">${L.icon || '📋'}</span>
+        <span class="project-list-name">${escapeHtml(L.name)}</span>
+      `;
+      sub.onclick = (e) => {
+        e.stopPropagation();
+        state.section = 'lists';
+        state.currentListId = L.id;
+        renderSidebar(); renderView();
+      };
+      projSec.appendChild(sub);
+    });
   });
   f.appendChild(projSec);
 
@@ -597,8 +641,12 @@ function renderNotesSidebar() {
   const f = document.createDocumentFragment();
   const nav = document.createElement('div');
   nav.className = 'sidebar-section';
-  nav.innerHTML = `<button class="nav-row ${state.notesFolderFilter === null ? 'active' : ''}" data-act="all">${ic('note')}<span>All Notes</span></button>`;
-  nav.querySelector('[data-act="all"]').onclick = () => { state.notesFolderFilter = null; renderSidebar(); renderView(); };
+  nav.innerHTML = `
+    <button class="nav-row ${state.notesProjectFilter === null ? 'active' : ''}" data-act="all">${ic('note')}<span>All Notes</span></button>
+    <button class="nav-row ${state.notesProjectFilter === 'none' ? 'active' : ''}" data-act="none">${ic('note')}<span>No folder</span></button>
+  `;
+  nav.querySelector('[data-act="all"]').onclick = () => { state.notesProjectFilter = null; renderSidebar(); renderView(); };
+  nav.querySelector('[data-act="none"]').onclick = () => { state.notesProjectFilter = 'none'; renderSidebar(); renderView(); };
   f.appendChild(nav);
 
   const sec = document.createElement('div');
@@ -606,23 +654,20 @@ function renderNotesSidebar() {
   sec.innerHTML = `
     <div class="sidebar-section-head">
       <span>Folders</span>
-      <button class="icon-btn tiny" id="new-folder-btn" title="New folder">${ic('plus', 12)}</button>
+      <button class="icon-btn tiny" id="new-project-btn-notes" title="New project (folder)">${ic('plus', 12)}</button>
     </div>
   `;
-  state.noteFolders.forEach(folder => {
-    const cnt = state.notes.filter(n => n.folder_id === folder.id).length;
+  state.projects.forEach(p => {
+    const cnt = state.notes.filter(n => n.project_id === p.id).length;
     const el = document.createElement('div');
-    el.className = 'folder-item' + (state.notesFolderFilter === folder.id ? ' active' : '');
+    el.className = 'folder-item' + (state.notesProjectFilter === p.id ? ' active' : '');
     el.innerHTML = `
-      <span class="folder-icon" style="background:${folder.color}33;color:${folder.color}">${folder.icon || '📁'}</span>
-      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(folder.name)}</span>
+      <span class="folder-icon" style="background:${p.color}33;color:${p.color}">📁</span>
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.name)}</span>
       <span style="font-size:11px;color:var(--text-3)">${cnt}</span>
     `;
-    el.onclick = () => { state.notesFolderFilter = folder.id; renderSidebar(); renderView(); };
-    el.oncontextmenu = (e) => {
-      e.preventDefault();
-      confirmThenDelete(`Delete folder "${folder.name}"? Its notes move to no folder.`, () => deleteNoteFolder(folder.id));
-    };
+    el.onclick = () => { state.notesProjectFilter = p.id; renderSidebar(); renderView(); };
+    el.oncontextmenu = (e) => { e.preventDefault(); projectContextMenu(p); };
     sec.appendChild(el);
   });
   f.appendChild(sec);
@@ -630,7 +675,7 @@ function renderNotesSidebar() {
   const wrap = document.createElement('div');
   wrap.appendChild(f);
   setTimeout(() => {
-    $('#new-folder-btn')?.addEventListener('click', openNewFolder);
+    $('#new-project-btn-notes')?.addEventListener('click', openNewProject);
   }, 0);
   return wrap;
 }
@@ -698,7 +743,7 @@ function updateTagBar() {
 let _lastViewKey = null;
 function renderView() {
   const view = $('#view');
-  const key = state.section + ':' + state.tasksView + ':' + (state.currentProjectId || '') + ':' + (state.tagFilter || '') + ':' + (state.currentNoteId || '') + ':' + (state.currentListId || '') + ':' + (state.notesFolderFilter || '');
+  const key = state.section + ':' + state.tasksView + ':' + (state.currentProjectId || '') + ':' + (state.tagFilter || '') + ':' + (state.currentNoteId || '') + ':' + (state.currentListId || '') + ':' + (state.notesProjectFilter || '');
   if (key !== _lastViewKey) {
     view.style.animation = 'none'; void view.offsetHeight; view.style.animation = '';
     _lastViewKey = key;
@@ -711,11 +756,29 @@ function renderView() {
   // padding adapt for editor-style views
   view.style.padding = (state.section === 'notes' || state.section === 'lists') ? '0' : '22px 24px';
 
+  if (state.loading) return renderLoadingSkeleton(view);
+
   if (state.section === 'tasks')   return renderTasksView(view);
   if (state.section === 'notes')   return renderNotesView(view);
   if (state.section === 'lists')   return renderListsView(view);
   if (state.section === 'settings')return renderSettingsView(view);
   if (state.section === 'calendar')return renderCalendarView(view);
+}
+
+function renderLoadingSkeleton(view) {
+  $('#view-title').textContent = 'Loading…';
+  $('#view-subtitle').textContent = '';
+  view.innerHTML = `
+    <div class="loading-state">
+      <div class="loading-spinner" aria-hidden="true"></div>
+      <div class="loading-skeleton">
+        <div class="skel-card"></div>
+        <div class="skel-card"></div>
+        <div class="skel-card"></div>
+        <div class="skel-card"></div>
+      </div>
+    </div>
+  `;
 }
 
 function openProject(id) {
@@ -858,20 +921,23 @@ function taskCardHTML(t) {
   const tags = (t.tags || []).map(tg => `<span class="tag-pill" data-tag="${escapeHtml(tg)}">#${escapeHtml(tg)}</span>`).join('');
   const proj = state.projects.find(p => p.id === t.project_id);
   const showProj = (state.tasksView === 'today' || state.tasksView === 'board' || state.tasksView === 'all' || state.focusMode);
+  const noteLinked = t.note_id && state.notes.some(n => n.id === t.note_id);
   return `
     <div class="task-card ${t.status === 'done' ? 'done' : ''} ${overdue ? 'overdue' : ''}" draggable="true" data-id="${t.id}">
       <div class="task-head">
         <button class="task-check" data-action="check" title="Mark complete"></button>
-        <span class="task-title" data-action="open">${escapeHtml(t.title)}</span>
+        <span class="task-title" data-action="title" contenteditable="true" spellcheck="false">${escapeHtml(t.title)}</span>
+        ${noteLinked ? `<button class="icon-btn tiny note-link" data-action="open-note" title="Open source note">${ic('note', 12)}</button>` : ''}
         <span class="priority-badge ${t.priority}">${labelPriority(t.priority)}</span>
+        <button class="icon-btn tiny task-del" data-action="del" title="Delete task">${ic('x', 12)}</button>
       </div>
-      <div class="task-meta">
+      <div class="task-meta" data-action="open">
         ${proj && showProj ? `<span style="color:${proj.color}">●</span> ${escapeHtml(proj.name)}` : ''}
         ${t.due_date ? `<span class="due ${dueClass}">${fmtDue(t.due_date)}</span>` : ''}
         ${t.time_estimate ? `<span class="est">${t.time_estimate}h</span>` : ''}
         ${t.recurring && t.recurring !== 'none' ? `<span title="Recurring ${t.recurring}">⟳ ${t.recurring}</span>` : ''}
       </div>
-      ${tags ? `<div style="display:flex;gap:4px;flex-wrap:wrap">${tags}</div>` : ''}
+      ${tags ? `<div style="display:flex;gap:4px;flex-wrap:wrap" data-action="open">${tags}</div>` : ''}
     </div>
   `;
 }
@@ -880,17 +946,50 @@ function labelPriority(p) { return { urgent:'Urgent', high:'High', normal:'Norma
 function hookCards(root) {
   $$('.task-card', root).forEach(el => {
     const id = el.dataset.id;
-    el.querySelector('[data-action="open"]').onclick = () => openTaskModal(id);
+    el.querySelectorAll('[data-action="open"]').forEach(z => {
+      z.onclick = (e) => {
+        if (e.target.closest('.tag-pill')) return;
+        openTaskModal(id);
+      };
+    });
     el.querySelector('[data-action="check"]').onclick = (e) => {
       e.stopPropagation();
       const t = state.tasks.find(t => t.id === id); if (!t) return;
       if (t.status === 'done') updateTask(id, { status: 'todo', completed_at: null });
       else { el.classList.add('completing'); setTimeout(() => completeTask(id), 320); }
     };
+    const titleEl = el.querySelector('[data-action="title"]');
+    if (titleEl) {
+      titleEl.addEventListener('click', (e) => e.stopPropagation());
+      titleEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); titleEl.blur(); }
+        if (e.key === 'Escape') { e.preventDefault(); titleEl.textContent = state.tasks.find(t => t.id === id)?.title || ''; titleEl.blur(); }
+      });
+      titleEl.addEventListener('blur', () => {
+        const newTitle = titleEl.textContent.trim();
+        const t = state.tasks.find(t => t.id === id);
+        if (t && newTitle && newTitle !== t.title) updateTask(id, { title: newTitle });
+        else if (t && !newTitle) titleEl.textContent = t.title;
+      });
+    }
+    el.querySelector('[data-action="del"]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const t = state.tasks.find(t => t.id === id);
+      confirmThenDelete(`Delete "${t?.title || 'this task'}"?`, () => { deleteTask(id); toast('Deleted'); });
+    });
+    el.querySelector('[data-action="open-note"]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const t = state.tasks.find(t => t.id === id); if (!t || !t.note_id) return;
+      state.section = 'notes';
+      state.currentNoteId = t.note_id;
+      state.notesProjectFilter = null;
+      renderSidebar(); renderView();
+    });
     el.querySelectorAll('.tag-pill[data-tag]').forEach(p => {
       p.onclick = (e) => { e.stopPropagation(); state.tagFilter = p.dataset.tag; renderView(); updateTagBar(); };
     });
     el.addEventListener('dragstart', (e) => {
+      if (e.target.isContentEditable) { e.preventDefault(); return; }
       e.dataTransfer.setData('text/plain', id);
       e.dataTransfer.effectAllowed = 'move';
       el.classList.add('dragging');
@@ -988,7 +1087,8 @@ function renderWorkBlocks() {
 function filteredNotes() {
   const q = state.notesSearch.trim().toLowerCase();
   let notes = state.notes.slice();
-  if (state.notesFolderFilter) notes = notes.filter(n => n.folder_id === state.notesFolderFilter);
+  if (state.notesProjectFilter === 'none') notes = notes.filter(n => !n.project_id);
+  else if (state.notesProjectFilter) notes = notes.filter(n => n.project_id === state.notesProjectFilter);
   if (q) notes = notes.filter(n => n.title.toLowerCase().includes(q) || stripTags(n.body).toLowerCase().includes(q));
   const sorter = {
     modified: (a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''),
@@ -1000,9 +1100,12 @@ function filteredNotes() {
 }
 function renderNotesView(view) {
   $('#view-title').textContent = 'Notes';
-  $('#view-subtitle').textContent = state.notesFolderFilter
-    ? (state.noteFolders.find(f => f.id === state.notesFolderFilter)?.name || '')
-    : 'All notes';
+  const filterLabel = state.notesProjectFilter === 'none'
+    ? 'No folder'
+    : state.notesProjectFilter
+      ? (state.projects.find(p => p.id === state.notesProjectFilter)?.name || '')
+      : 'All notes';
+  $('#view-subtitle').textContent = filterLabel;
 
   const notes = filteredNotes();
   if (state.currentNoteId && !notes.find(n => n.id === state.currentNoteId)) {
@@ -1135,13 +1238,13 @@ function renderEditor(root) {
     </div>
   `;
 
-  // folder picker
+  // folder picker — folders ARE projects
   const folderOpts = [{ value: '', label: 'No folder', icon: '📁' }]
-    .concat(state.noteFolders.map(f => ({ value: f.id, label: f.name, icon: f.icon || '📁' })));
+    .concat(state.projects.map(p => ({ value: p.id, label: p.name, icon: '📁' })));
   root.querySelector('#folder-pick-mount').appendChild(makeDropdownTrigger({
-    value: n.folder_id || '',
+    value: n.project_id || '',
     options: folderOpts,
-    onChange: (v) => updateNote(n.id, { folder_id: v || null }),
+    onChange: (v) => updateNote(n.id, { project_id: v || null }),
   }));
 
   // heading style picker
@@ -1166,7 +1269,6 @@ function renderEditor(root) {
       { value: 'export',   label: 'Export markdown' },
       { value: 'copy',     label: 'Copy all text' },
       { value: 'task',     label: 'Create task from note' },
-      { value: 'link',     label: 'Link to project' },
       { sep: true },
       { value: 'delete',   label: 'Delete note', danger: true },
     ],
@@ -1181,11 +1283,9 @@ function renderEditor(root) {
       } else if (v === 'copy') {
         navigator.clipboard.writeText(stripTags(n.body)); toast('Copied');
       } else if (v === 'task') {
-        openQuickCapture({ title: n.title, description: stripTags(n.body).slice(0, 200) });
-      } else if (v === 'link') {
-        openLinkProjectModal(n);
+        createTaskFromNote(n);
       } else if (v === 'delete') {
-        confirmThenDelete(`Delete "${n.title}"?`, () => deleteNote(n.id));
+        confirmThenDelete(`Delete "${n.title}"?`, () => { deleteNote(n.id); toast('Deleted'); });
       }
     },
     labelFor: () => 'More',
@@ -1264,8 +1364,16 @@ function renderEditor(root) {
 
   // footer actions
   root.querySelector('#link-project').onclick = () => openLinkProjectModal(n);
-  root.querySelector('#create-task-from-note').onclick = () =>
-    openQuickCapture({ title: n.title, description: stripTags(n.body).slice(0, 200) });
+  root.querySelector('#create-task-from-note').onclick = () => createTaskFromNote(n);
+}
+
+function createTaskFromNote(n) {
+  openQuickCapture({
+    title: n.title,
+    description: stripTags(n.body).slice(0, 200),
+    project_id: n.project_id || undefined,
+    note_id: n.id,
+  });
 }
 
 function openLinkProjectModal(n) {
@@ -1283,38 +1391,6 @@ function openLinkProjectModal(n) {
       }));
     },
     onPrimary: (m) => updateNote(n.id, { project_id: m._val || null }),
-  });
-}
-
-function openNewFolder() {
-  openConfirm({
-    title: 'New folder',
-    body: `
-      <div class="field"><label>Name</label><input class="in" id="nf-name" placeholder="Ideas"/></div>
-      <div class="field"><label>Icon (emoji)</label><input class="in" id="nf-icon" value="📁" maxlength="3"/></div>
-      <div class="field"><label>Color</label>
-        <div style="display:flex;gap:6px;flex-wrap:wrap">
-          ${['#FFD60A','#FF9F0A','#007AFF','#30D158','#5856D6','#EC4899'].map((c,i)=>`<button data-c="${c}" class="np-c" style="width:24px;height:24px;border-radius:6px;background:${c};border:2px solid ${i===0?'#fff':'transparent'}"></button>`).join('')}
-        </div>
-      </div>
-    `,
-    primary: 'Create',
-    onMount: (m) => {
-      setTimeout(() => m.querySelector('#nf-name').focus(), 30);
-      m._color = '#FFD60A';
-      m.querySelectorAll('.np-c').forEach(b => {
-        b.onclick = () => {
-          m.querySelectorAll('.np-c').forEach(x => x.style.border = '2px solid transparent');
-          b.style.border = '2px solid #fff';
-          m._color = b.dataset.c;
-        };
-      });
-    },
-    onPrimary: (m) => {
-      const name = m.querySelector('#nf-name').value.trim();
-      const icon = m.querySelector('#nf-icon').value || '📁';
-      if (name) createNoteFolder(name, m._color, icon, state.noteFolders.length);
-    },
   });
 }
 
@@ -1430,9 +1506,11 @@ function renderListPanel(root, L) {
 
   root.innerHTML = `
     <div class="lists-right-head">
-      <span class="icon" style="background:${L.color_gradient}">${L.icon || '📋'}</span>
+      <button class="icon picker-trigger" id="icon-color-btn" style="background:${L.color_gradient}" title="Change icon and color">${L.icon || '📋'}</button>
       <h2 contenteditable="true" spellcheck="false" id="list-title">${escapeHtml(L.name)}</h2>
       <div class="actions">
+        <span id="list-category-mount"></span>
+        <span id="list-project-mount"></span>
         <span id="list-sort-mount"></span>
         <button class="btn purple tiny" id="add-item-btn">+ Add item</button>
         <button class="btn ghost tiny" id="delete-list">Delete</button>
@@ -1460,6 +1538,27 @@ function renderListPanel(root, L) {
     onChange: (v) => { state.listsSort = v; renderView(); },
   }));
 
+  // category dropdown
+  root.querySelector('#list-category-mount').appendChild(makeDropdownTrigger({
+    value: L.category || 'workspace',
+    options: [
+      { value: 'workspace', label: 'Workspace' },
+      { value: 'personal',  label: 'Personal' },
+    ],
+    onChange: (v) => updateList(L.id, { category: v }),
+  }));
+
+  // project link dropdown
+  root.querySelector('#list-project-mount').appendChild(makeDropdownTrigger({
+    value: L.project_id || '',
+    options: [{ value: '', label: 'No project' }].concat(state.projects.map(p => ({ value: p.id, label: p.name }))),
+    onChange: (v) => updateList(L.id, { project_id: v || null }),
+    labelFor: (v) => v ? (state.projects.find(p => p.id === v)?.name || 'Project') : 'No project',
+  }));
+
+  // icon/color picker
+  root.querySelector('#icon-color-btn').onclick = () => openListIconColorPicker(L);
+
   // title
   const titleEl = root.querySelector('#list-title');
   titleEl.addEventListener('blur', () => renameList(L.id, titleEl.textContent.trim() || 'Untitled'));
@@ -1467,7 +1566,7 @@ function renderListPanel(root, L) {
 
   // delete
   root.querySelector('#delete-list').onclick = () =>
-    confirmThenDelete(`Delete "${L.name}"?`, () => deleteList(L.id));
+    confirmThenDelete(`Delete "${L.name}"? All items will be removed.`, () => { deleteList(L.id); toast('Deleted'); });
 
   // add item button
   root.querySelector('#add-item-btn').onclick = () => $('#quick-add-input').focus();
@@ -1498,6 +1597,7 @@ function renderListPanel(root, L) {
   });
 
   // hook items
+  const listItemsRoot = root.querySelector('#list-items');
   root.querySelectorAll('.list-item').forEach(el => {
     const id = el.dataset.id;
     el.querySelector('.check').onclick = (e) => {
@@ -1516,9 +1616,83 @@ function renderListPanel(root, L) {
     });
     el.querySelector('.remove').onclick = (e) => {
       e.stopPropagation();
-      deleteListItem(id);
-      toast('Deleted');
+      confirmThenDelete('Delete this item?', () => { deleteListItem(id); toast('Deleted'); });
     };
+
+    // drag handle for reorder (only in manual sort)
+    if (state.listsSort === 'manual') {
+      el.setAttribute('draggable', 'true');
+      el.addEventListener('dragstart', (e) => {
+        if (e.target.isContentEditable) { e.preventDefault(); return; }
+        e.dataTransfer.setData('text/list-item', id);
+        e.dataTransfer.effectAllowed = 'move';
+        el.classList.add('dragging');
+      });
+      el.addEventListener('dragend', () => el.classList.remove('dragging'));
+      el.addEventListener('dragover', (e) => {
+        if (!e.dataTransfer.types.includes('text/list-item')) return;
+        e.preventDefault();
+        const rect = el.getBoundingClientRect();
+        const after = (e.clientY - rect.top) > rect.height / 2;
+        el.classList.toggle('drop-after', after);
+        el.classList.toggle('drop-before', !after);
+      });
+      el.addEventListener('dragleave', () => { el.classList.remove('drop-after','drop-before'); });
+      el.addEventListener('drop', (e) => {
+        if (!e.dataTransfer.types.includes('text/list-item')) return;
+        e.preventDefault();
+        const draggedId = e.dataTransfer.getData('text/list-item');
+        const after = el.classList.contains('drop-after');
+        el.classList.remove('drop-after','drop-before');
+        if (!draggedId || draggedId === id) return;
+        const currentOrder = Array.from(listItemsRoot.querySelectorAll('.list-item')).map(n => n.dataset.id);
+        const fromIdx = currentOrder.indexOf(draggedId);
+        let toIdx = currentOrder.indexOf(id);
+        if (fromIdx < 0 || toIdx < 0) return;
+        currentOrder.splice(fromIdx, 1);
+        toIdx = currentOrder.indexOf(id) + (after ? 1 : 0);
+        currentOrder.splice(toIdx, 0, draggedId);
+        reorderListItems(L.id, currentOrder);
+      });
+    }
+  });
+}
+
+function openListIconColorPicker(L) {
+  openConfirm({
+    title: 'List style',
+    body: `
+      <div class="field"><label>Icon</label>
+        <div id="li-icons" style="display:flex;gap:6px;flex-wrap:wrap">
+          ${LIST_ICONS.map(ic => `<button data-i="${escapeHtml(ic)}" class="li-i" style="width:30px;height:30px;border-radius:8px;background:var(--surface-2);border:2px solid ${ic === (L.icon || '📋') ? '#fff' : 'transparent'};font-size:16px">${ic}</button>`).join('')}
+        </div>
+      </div>
+      <div class="field"><label>Color</label>
+        <div id="li-grads" style="display:flex;gap:6px;flex-wrap:wrap">
+          ${LIST_GRADIENTS.map(g => `<button data-g="${escapeHtml(g)}" class="li-g" style="width:30px;height:30px;border-radius:8px;background:${g};border:2px solid ${g === L.color_gradient ? '#fff' : 'transparent'}"></button>`).join('')}
+        </div>
+      </div>
+    `,
+    primary: 'Save',
+    onMount: (m) => {
+      m._icon = L.icon || '📋';
+      m._grad = L.color_gradient;
+      m.querySelectorAll('.li-i').forEach(b => {
+        b.onclick = () => {
+          m.querySelectorAll('.li-i').forEach(x => x.style.border = '2px solid transparent');
+          b.style.border = '2px solid #fff';
+          m._icon = b.dataset.i;
+        };
+      });
+      m.querySelectorAll('.li-g').forEach(b => {
+        b.onclick = () => {
+          m.querySelectorAll('.li-g').forEach(x => x.style.border = '2px solid transparent');
+          b.style.border = '2px solid #fff';
+          m._grad = b.dataset.g;
+        };
+      });
+    },
+    onPrimary: (m) => updateList(L.id, { icon: m._icon, color_gradient: m._grad }),
   });
 }
 
@@ -2072,6 +2246,10 @@ async function init() {
   if (SUPABASE_URL.startsWith('YOUR_') || SUPABASE_ANON_KEY.startsWith('YOUR_')) {
     toast('Add your Supabase keys in app.js', 'error'); return;
   }
+  // Paint the loading skeleton immediately so the user sees activity
+  // while the initial Supabase fetch is in flight.
+  renderSidebar();
+  renderView();
   await loadAll();
   renderSidebar();
   renderWorkBlocks();

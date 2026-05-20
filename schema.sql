@@ -8,7 +8,7 @@
 create extension if not exists "pgcrypto";
 
 -- =====================================================
--- projects
+-- projects (also acts as the "folders" namespace for notes)
 -- =====================================================
 create table if not exists projects (
   id uuid primary key default gen_random_uuid(),
@@ -19,11 +19,30 @@ create table if not exists projects (
 );
 
 -- =====================================================
+-- notes
+-- =====================================================
+create table if not exists notes (
+  id uuid primary key default gen_random_uuid(),
+  title text not null default 'Untitled',
+  body text not null default '',
+  project_id uuid references projects(id) on delete set null,
+  word_count integer not null default 0,
+  pinned boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists notes_project_idx on notes(project_id);
+create index if not exists notes_updated_idx on notes(updated_at desc);
+create index if not exists notes_pinned_idx  on notes(pinned);
+
+-- =====================================================
 -- tasks
 -- =====================================================
 create table if not exists tasks (
   id uuid primary key default gen_random_uuid(),
   project_id uuid references projects(id) on delete cascade,
+  note_id uuid references notes(id) on delete set null,
   title text not null,
   description text default '',
   due_date date,
@@ -38,6 +57,7 @@ create table if not exists tasks (
 );
 
 create index if not exists tasks_project_idx on tasks(project_id);
+create index if not exists tasks_note_idx    on tasks(note_id);
 create index if not exists tasks_status_idx  on tasks(status);
 create index if not exists tasks_due_idx     on tasks(due_date);
 create index if not exists tasks_tags_idx    on tasks using gin (tags);
@@ -63,35 +83,7 @@ create index if not exists wbt_block_idx on work_block_tasks(work_block_id);
 create index if not exists wbt_task_idx  on work_block_tasks(task_id);
 
 -- =====================================================
--- NOTES (Notes section)
--- =====================================================
-create table if not exists note_folders (
-  id uuid primary key default gen_random_uuid(),
-  name text not null,
-  color text not null default '#FFD60A',
-  icon text default '📁',
-  position integer not null default 0,
-  created_at timestamptz not null default now()
-);
-
-create table if not exists notes (
-  id uuid primary key default gen_random_uuid(),
-  title text not null default 'Untitled',
-  body text not null default '',
-  folder_id uuid references note_folders(id) on delete set null,
-  project_id uuid references projects(id) on delete set null,
-  word_count integer not null default 0,
-  pinned boolean not null default false,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
-create index if not exists notes_folder_idx  on notes(folder_id);
-create index if not exists notes_updated_idx on notes(updated_at desc);
-create index if not exists notes_pinned_idx  on notes(pinned);
-
--- =====================================================
--- LISTS (Lists section)
+-- LISTS
 -- =====================================================
 create table if not exists lists (
   id uuid primary key default gen_random_uuid(),
@@ -99,9 +91,12 @@ create table if not exists lists (
   icon text default '📋',
   color_gradient text default 'linear-gradient(135deg,#5856D6,#7C3AED)',
   category text not null default 'workspace' check (category in ('workspace','personal')),
+  project_id uuid references projects(id) on delete set null,
   position integer not null default 0,
   created_at timestamptz not null default now()
 );
+
+create index if not exists lists_project_idx on lists(project_id);
 
 create table if not exists list_items (
   id uuid primary key default gen_random_uuid(),
@@ -122,7 +117,6 @@ alter table projects        enable row level security;
 alter table tasks           enable row level security;
 alter table work_blocks     enable row level security;
 alter table work_block_tasks enable row level security;
-alter table note_folders    enable row level security;
 alter table notes           enable row level security;
 alter table lists           enable row level security;
 alter table list_items      enable row level security;
@@ -131,7 +125,7 @@ do $$
 declare
   t text;
 begin
-  for t in select unnest(array['projects','tasks','work_blocks','work_block_tasks','note_folders','notes','lists','list_items']) loop
+  for t in select unnest(array['projects','tasks','work_blocks','work_block_tasks','notes','lists','list_items']) loop
     if not exists (select 1 from pg_policies where tablename=t and policyname='anon all') then
       execute format('create policy "anon all" on %I for all using (true) with check (true)', t);
     end if;
